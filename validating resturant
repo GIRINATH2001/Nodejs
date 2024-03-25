@@ -1,0 +1,122 @@
+validate_restaurant  1
+
+
+
+const express = require("express");
+const app = express();
+const port = process.env.PORT || 3000;
+const catalyst = require("zcatalyst-sdk-node");
+const { RequestValidations } = require("./validations");
+const { validator } = require("./middlewares/common.middleware");
+
+app.use(express.json());
+app.use(express.text());
+app.use(express.urlencoded({ extended: true }));
+
+// Define routes
+app.post(
+  "/",
+  validator(RequestValidations.validateRestaurant),
+  async (req, res) => {
+    try {
+      let catalystApp = catalyst.initialize(req);
+
+      const zcqlAPI = catalystApp.zcql();
+
+      const { inputtext, mobile, username, userns } = req.body;
+
+      //   const validateOutletQuery = `SELECT * FROM outlets WHERE outlet_id = ${req.query.outlet_id}`
+      const validateOutletQuery = `SELECT * FROM outlets WHERE customer_name LIKE '${inputtext}' LIMIT 1`;
+
+      const queryResult = await zcqlAPI.executeZCQLQuery(validateOutletQuery);
+
+      const outlet = queryResult?.[0]?.outlets;
+
+      if (!outlet) {
+        return res.status(200).json({
+          message: "Restaurant not found!",
+          status: 0,
+        });
+      }
+
+      res.status(200).json({
+        status: 1,
+        did: outlet?.ROWID ?? "",
+        name: outlet?.customer_name ?? "",
+        username: username ?? "",
+        display:
+          "You may send the same as a voice note, if you don't want to type\n\nExample :\n\n2 idly, 1 madras coffee, 4 Veg Biriyani large, 2 Small Lassi\n\n3 Madras Coffee with no sugar, 3 meduvada\n",
+        link: "https://phoneorder.co/menuitemimages/15126462098.Jpeg",
+        instructions: outlet?.instructions ?? "",
+      });
+    } catch (err) {
+      return res.status(400).json({
+        error: err?.message,
+        message: "Internal server error, something went wrong!",
+        status: 0,
+      });
+    }
+  }
+);
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Server is listening at http://localhost:${port}`);
+});
+
+module.exports = app;
+
+
+
+
+
+
+
+
+
+
+validate_restaurant  2
+const pick = (object, keys) => {
+  return keys.reduce((obj, key) => {
+    if (object && Object.prototype.hasOwnProperty.call(object, key)) {
+      // eslint-disable-next-line no-param-reassign
+      obj[key] = object[key];
+    }
+    return obj;
+  }, {});
+};
+
+module.exports = { pick };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+validate_restaurant  3
+
+
+
+const Joi = require("joi");
+
+class RequestValidations {
+  static validateRestaurant = {
+    body: Joi.object().keys({
+      inputtext: Joi.string().required(),
+      mobile: Joi.string().required(),
+      username: Joi.string().required(),
+      userns: Joi.string().required(),
+    }),
+  };
+}
+
+module.exports = { RequestValidations };
