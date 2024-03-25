@@ -1,0 +1,262 @@
+create_order_from_whattsapp 01
+
+
+const express = require("express");
+const app = express();
+const port = process.env.PORT || 3000;
+const catalyst = require("zcatalyst-sdk-node");
+const { RequestValidations } = require("./validations");
+const { validator } = require("./middlewares/common.middleware");
+const moment = require("moment/moment");
+const { default: OpenAI } = require("openai");
+
+app.use(express.json());
+app.use(express.text());
+app.use(express.urlencoded({ extended: true }));
+
+// Define routes
+app.post("/", validator(RequestValidations.createOrder), async (req, res) => {
+  try {
+    let catalystApp = catalyst.initialize(req);
+
+    const zcqlAPI = catalystApp.zcql();
+
+    const { did, mobile, link } = req.body;
+
+    /**
+     * Get lastly updated token
+     */
+
+    const getTokenQuery = `SELECT * FROM chatgpt_apikey ORDER BY last_used_timestamp ASC LIMIT 1`;
+
+    const getChatGPTTokenResult = await zcqlAPI.executeZCQLQuery(getTokenQuery);
+
+    let tokenRecord = getChatGPTTokenResult?.[0]?.chatgpt_apikey;
+
+    const apiKey = tokenRecord?.token;
+
+    const getItemsForOutletQuery = `SELECT * FROM item_master WHERE customer_id = '${did}'`;
+
+    const menuItemsResponse = await zcqlAPI.executeZCQLQuery(
+      getItemsForOutletQuery
+    );
+
+    if (!menuItemsResponse?.length) {
+      return res.status(200).json({
+        message: "Menu items not found",
+        status: 0,
+      });
+    }
+
+    let menuString = "";
+
+    menuItemsResponse.forEach((item) => {
+      if (!item?.item_master?.item_name) return;
+
+      if (!menuString) {
+        menuString = item?.item_master?.item_name ?? "";
+        return;
+      }
+      menuString += `, ${item?.item_master?.item_name}`;
+    });
+
+    console.log("menuString >>>", menuString);
+
+    const messages = [
+      {
+        role: "system",
+        content: "You are a restaurant order taker",
+      },
+      {
+        role: "user",
+        content:
+          "Below is a restaurant order containing dishes from all cuisines across the world. \n The order might have some spelling mistakes. \n Generate a corrected and formatted order in a proper JSON format of [{item,quantity, size, special intructions}]. \n Do not add anything else in the response except the JSON content. \n Do not add any explanation to the data. I am proving few examples of the prompt and response required. Give proper and exact double quotes in the output JSON \n Take the order and compare it with the menu card, and print only existing items. Ignore non-existing items \n Here is the menu card - Iddly $1.00, Vada small $0.50, Vada medium $0.75, Vada large $1.00, Pongal $2.50, Poori $2.00, Dosa $3.00 , Burger $5.00 ,Tea $1.00, Rasgola $1.00, Gulab Jamun $2.00. Biriyani $3.00",
+      },
+      {
+        role: "user",
+        content:
+          " Iddli,  5 Vada medium, 2 pongal with extra ghee,  Puri mild spice",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'1',size:'',specialInstructions:''}, {'item':'Vada','quantity':'5','size':'medium','specialInstructions':'Medium'}, {'item':'pongal',quantity:'2',size:'',specialInstructions:'extra ghee'}, {'item':'puri','quantity':'1','size':'','specialInstructions':'mild spice'}]",
+      },
+      {
+        role: "user",
+        content:
+          "Get me 5 Iddli with extra ghee, 3 Vada, 1 pongal, 5 Puri mild spice",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'5',size:'','specialInstructions':'Extra Ghee'}, {'item':'Vada','quantity':'3','size':'','specialInstructions':''}, {'item':'pongal','quantity':'1',size:'','specialInstructions':''}, {'item':'puri','quantity':'5',size:'','specialInstructions':'mild spice'}]",
+      },
+      {
+        role: "user",
+        content: "add 1 more Iddli",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'1','size':'','specialinstruction':''}]",
+      },
+      {
+        role: "user",
+        content: "5 iddli, add 1 more Iddli",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'6','size':'','specialinstruction':''}]",
+      },
+      {
+        role: "user",
+        content: "remove Iddli",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'-1','size':'','specialinstruction':''}]",
+      },
+      {
+        role: "user",
+        content: "- 2 Iddli",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'-2','size':'','specialinstruction':''}]",
+      },
+      {
+        role: "user",
+        content: "5 iddly, remove Iddly",
+      },
+      {
+        role: "assistant",
+        content:
+          "[{'item':'Iddli','quantity':'4','size':'','specialinstruction':''}]",
+      },
+      {
+        role: "user",
+        content: `Take the customer order and compare it with the menu card, and print only existing items. Ignore non-existing items \n Here is the menu card ${menuString}`,
+      },
+      {
+        role: "user",
+        content: ` , ${link}`,
+      },
+    ];
+
+    const openai = new OpenAI({
+      apiKey: apiKey,
+    });
+
+    console.log("Using apiKey >>>", apiKey);
+
+    const dateToday = moment().utc().format("Y-MM-DD HH:mm:ss");
+
+    const updateQuery = `UPDATE chatgpt_apikey SET last_used_timestamp = '${dateToday}' WHERE ROWID='${tokenRecord?.ROWID}'`;
+
+    await zcqlAPI.executeZCQLQuery(updateQuery);
+
+    const completionRes = await openai.chat.completions.create({
+      messages: messages,
+      temperature: 0,
+      model: "gpt-3.5-turbo",
+    });
+
+    if (!completionRes) {
+      return res.status(200).json({
+        message: "Item not found, try again!",
+        status: 0,
+      });
+    }
+
+    console.log("completionRes?.choices >>>", completionRes?.choices);
+
+    const choice = completionRes?.choices[0];
+
+    const content = JSON.parse(
+      choice?.message?.content.replaceAll("'", '"') ?? ""
+    );
+
+    if (!content?.length || !content) {
+      return res.status(200).json({
+        message: "Item not found, try again!",
+        status: 0,
+      });
+    }
+
+    const outputString = `${content?.[0]?.quantity ?? 0} x ${
+      content?.[0]?.item
+    }\r\n`;
+
+    return res.status(201).json({
+      body: outputString,
+      username: "Amal",
+      display: `To edit an existing order, You may type or Send a voice 
+	   note like the following example \r\n2 Tandoori Naan with extra butter 
+	   \r\n3 Panner Butter Masala with mild spice \r\n`,
+      ismodifier: 0,
+      modifiertext: "",
+      itemname: "",
+      transid: 0,
+    });
+  } catch (err) {
+    console.log("err ", err);
+    return res.status(400).json({
+      error: err?.message,
+      message: "Internal server error, something went wrong!",
+      status: 0,
+    });
+  }
+});
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Server is listening at http://localhost:${port}`);
+});
+
+module.exports = app;
+
+
+
+create_order_from_whattsapp  02
+
+
+
+const pick = (object, keys) => {
+  return keys.reduce((obj, key) => {
+    if (object && Object.prototype.hasOwnProperty.call(object, key)) {
+      // eslint-disable-next-line no-param-reassign
+      obj[key] = object[key];
+    }
+    return obj;
+  }, {});
+};
+
+module.exports = { pick };
+
+
+
+
+create_order_from_whattsapp  03 
+
+
+
+const Joi = require("joi");
+
+
+class RequestValidations {
+  static createOrder = {
+    body: Joi.object().keys({
+      did: Joi.string().required(),
+      mobile: Joi.string().required(),
+      link: Joi.string().required(),
+    }),
+  };
+}
+
+
+module.exports = { RequestValidations };
+
